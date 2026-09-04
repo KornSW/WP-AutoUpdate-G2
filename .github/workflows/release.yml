@@ -1,0 +1,119 @@
+name: Materialize and publish WordPress plugin release
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wordpress-release-master
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, 'VERSIONING') }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout complete repository history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: master
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Capture triggering commit subject
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          SUBJECT="$(git log -1 --pretty=%s)"
+          echo "subject=$SUBJECT" >> "$GITHUB_OUTPUT"
+
+      - name: Materialize plugin update support and build release
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RESULT="$(python .kvu/release.py)"
+          echo "$RESULT"
+
+          VERSION="$(python -c 'import json,sys; print(json.loads(sys.argv[1])["version"])' "$RESULT")"
+          TAG="$(python -c 'import json,sys; print(json.loads(sys.argv[1])["tag"])' "$RESULT")"
+          ASSET="$(python -c 'import json,sys; print(json.loads(sys.argv[1])["asset"])' "$RESULT")"
+          NOTES="$(python -c 'import json,sys; print(json.loads(sys.argv[1])["notes"])' "$RESULT")"
+          ENTRY="$(python -c 'import json,sys; print(json.loads(sys.argv[1])["entry"])' "$RESULT")"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
+          echo "notes=$NOTES" >> "$GITHUB_OUTPUT"
+          echo "entry=$ENTRY" >> "$GITHUB_OUTPUT"
+
+      - name: Validate generated state
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f doc/changelog.md
+          test -f doc/versioninfo.json
+          test -f doc/update.json
+          python -m json.tool doc/versioninfo.json >/dev/null
+          python -m json.tool doc/update.json >/dev/null
+
+          grep -F "Version: ${{ steps.build.outputs.version }}" "${{ steps.build.outputs.entry }}"
+          grep -F "Update URI: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/master/doc/update.json" "${{ steps.build.outputs.entry }}"
+          grep -F "tk_self_update_bootstrap( __FILE__ );" "${{ steps.build.outputs.entry }}"
+
+          unzip -l "${{ steps.build.outputs.asset }}"
+
+      - name: Commit materialized repository state locally
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git add -A ':!dist'
+
+          if git diff --cached --quiet; then
+            echo "No generated changes to commit."
+            exit 1
+          fi
+
+          git commit -m "${{ steps.source.outputs.subject }} -> VERSIONING [skip ci]"
+          git tag -a "${{ steps.build.outputs.tag }}" -m "Release ${{ steps.build.outputs.version }}"
+
+      # The release asset is made available BEFORE master exposes the new update.json.
+      - name: Push release tag first
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin "${{ steps.build.outputs.tag }}"
+
+      - name: Publish GitHub Release with custom WordPress ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh release create "${{ steps.build.outputs.tag }}"             "${{ steps.build.outputs.asset }}"             --verify-tag             --title "${{ steps.build.outputs.tag }}"             --notes-file "${{ steps.build.outputs.notes }}"
+
+      - name: Expose generated metadata on master last
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin HEAD:master
