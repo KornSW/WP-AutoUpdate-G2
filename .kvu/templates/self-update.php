@@ -57,6 +57,10 @@ class {{KSWUPD_CLASS_PREFIX}}SelfUpdate {
 			add_filter( 'plugins_api', [ $this, 'filter_plugin_information' ], 20, 3 );
 			add_filter( 'pre_set_site_transient_update_plugins', [ $this, 'inject_update_transient' ] );
 			add_filter( 'plugin_row_meta', [ $this, 'filter_plugin_row_meta' ], 10, 2 );
+
+			if ( is_admin() ) {
+				add_action( 'admin_menu', [ $this, 'register_diagnostics_page' ] );
+			}
 		}
 
 		private function get_plugin_headers(): array {
@@ -291,4 +295,258 @@ class {{KSWUPD_CLASS_PREFIX}}SelfUpdate {
 
 			return $links;
 		}
+
+		public function register_diagnostics_page(): void {
+			add_management_page(
+				'Self-Update Diagnose (KornSW)',
+				'Self-Update Diagnose (KornSW)',
+				'manage_options',
+				'{{KSWUPD_PREFIX}}-self-update-diagnostics',
+				[ $this, 'render_diagnostics_page' ]
+			);
+		}
+
+		private function diagnostic_http_request( bool $bypass_cache = false ): array {
+			$url = $this->get_metadata_url();
+
+			if ( $url === '' ) {
+				return [
+					'url'        => '',
+					'wp_error'   => 'Keine Update URI vorhanden.',
+					'http_code'  => 0,
+					'headers'    => [],
+					'body_length'=> 0,
+					'json_error' => '',
+					'version'    => '',
+					'download'   => '',
+				];
+			}
+
+			$request_url = $url;
+			$headers     = [
+				'Accept' => 'application/json',
+			];
+
+			if ( $bypass_cache ) {
+				$request_url = add_query_arg(
+					'ksw_diag',
+					rawurlencode( (string) microtime( true ) ),
+					$url
+				);
+				$headers['Cache-Control'] = 'no-cache';
+				$headers['Pragma']        = 'no-cache';
+			}
+
+			$response = wp_remote_get(
+				$request_url,
+				[
+					'timeout' => 15,
+					'headers' => $headers,
+				]
+			);
+
+			if ( is_wp_error( $response ) ) {
+				return [
+					'url'         => $request_url,
+					'wp_error'    => $response->get_error_code() . ': ' . $response->get_error_message(),
+					'http_code'   => 0,
+					'headers'     => [],
+					'body_length' => 0,
+					'json_error'  => '',
+					'version'     => '',
+					'download'    => '',
+				];
+			}
+
+			$body         = wp_remote_retrieve_body( $response );
+			$decoded      = json_decode( $body, true );
+			$json_error   = json_last_error_msg();
+			$resp_headers = wp_remote_retrieve_headers( $response );
+
+			$interesting_headers = [];
+			foreach ( [ 'etag', 'last-modified', 'cache-control', 'age', 'via', 'x-cache' ] as $header_name ) {
+				$value = '';
+
+				if ( is_object( $resp_headers ) && isset( $resp_headers[ $header_name ] ) ) {
+					$value = (string) $resp_headers[ $header_name ];
+				} elseif ( is_array( $resp_headers ) && isset( $resp_headers[ $header_name ] ) ) {
+					$value = (string) $resp_headers[ $header_name ];
+				}
+
+				$interesting_headers[ $header_name ] = $value;
+			}
+
+			return [
+				'url'         => $request_url,
+				'wp_error'    => '',
+				'http_code'   => (int) wp_remote_retrieve_response_code( $response ),
+				'headers'     => $interesting_headers,
+				'body_length' => is_string( $body ) ? strlen( $body ) : 0,
+				'json_error'  => $json_error,
+				'version'     => is_array( $decoded ) && ! empty( $decoded['version'] ) ? (string) $decoded['version'] : '',
+				'download'    => is_array( $decoded ) && ! empty( $decoded['download_url'] ) ? (string) $decoded['download_url'] : '',
+			];
+		}
+
+		private function diagnostic_transient_value( $container, string $property, string $plugin_key ) {
+			if ( ! is_object( $container ) || ! isset( $container->{$property} ) || ! is_array( $container->{$property} ) ) {
+				return null;
+			}
+
+			return $container->{$property}[ $plugin_key ] ?? null;
+		}
+
+		private function diagnostic_dump( $value ): string {
+			if ( null === $value ) {
+				return '(nicht vorhanden)';
+			}
+
+			if ( is_scalar( $value ) ) {
+				return (string) $value;
+			}
+
+			return print_r( $value, true );
+		}
+
+		public function render_diagnostics_page(): void {
+			if ( ! current_user_can( 'manage_options' ) ) {
+				wp_die( esc_html__( 'Du hast keine Berechtigung für diese Seite.' ) );
+			}
+
+			$forced = false;
+
+			if ( isset( $_POST['ksw_force_update_check'] ) ) {
+				check_admin_referer( '{{KSWUPD_PREFIX}}_force_update_check' );
+
+				delete_site_transient( 'update_plugins' );
+
+				if ( function_exists( 'wp_clean_plugins_cache' ) ) {
+					wp_clean_plugins_cache( true );
+				}
+
+				wp_update_plugins();
+
+				$forced = true;
+			}
+
+			$headers       = $this->get_plugin_headers();
+			$metadata_url  = $this->get_metadata_url();
+			$metadata_host = wp_parse_url( $metadata_url, PHP_URL_HOST );
+			$host_hook     = ! empty( $metadata_host ) ? 'update_plugins_' . $metadata_host : '';
+			$transient     = get_site_transient( 'update_plugins' );
+
+			$checked   = $this->diagnostic_transient_value( $transient, 'checked', $this->plugin_basename );
+			$response  = $this->diagnostic_transient_value( $transient, 'response', $this->plugin_basename );
+			$no_update = $this->diagnostic_transient_value( $transient, 'no_update', $this->plugin_basename );
+
+			$normal_http = $this->diagnostic_http_request( false );
+			$bypass_http = $this->diagnostic_http_request( true );
+
+			$runtime_rows = [
+				'Plugin-Datei'              => $this->plugin_file,
+				'plugin_basename'           => $this->plugin_basename,
+				'Plugin-Slug'               => $this->get_slug(),
+				'Lokale Version'            => (string) ( $headers['Version'] ?? '' ),
+				'Plugin URI'                => (string) ( $headers['PluginURI'] ?? '' ),
+				'Update URI'                => $metadata_url,
+				'Bootstrap-Funktion'        => '{{KSWUPD_PREFIX}}_bootstrap',
+				'Updater-Klasse'            => '{{KSWUPD_CLASS_PREFIX}}SelfUpdate',
+				'Host-Filter'               => $host_hook,
+				'Host-Filter registriert'   => $host_hook !== '' && false !== has_filter( $host_hook ) ? 'JA' : 'NEIN',
+				'Transient-Filter registriert' => false !== has_filter( 'pre_set_site_transient_update_plugins' ) ? 'JA' : 'NEIN',
+				'plugins_api registriert'   => false !== has_filter( 'plugins_api' ) ? 'JA' : 'NEIN',
+				'plugin_row_meta registriert' => false !== has_filter( 'plugin_row_meta' ) ? 'JA' : 'NEIN',
+			];
+
+			?>
+			<div class="wrap">
+				<h1>Self-Update Diagnose (KornSW)</h1>
+
+				<?php if ( $forced ) : ?>
+					<div class="notice notice-success"><p>WordPress-Update-Check wurde erzwungen.</p></div>
+				<?php endif; ?>
+
+				<p>Diese Seite verändert die Update-Logik nicht. Sie zeigt den tatsächlich geladenen Runtime-Zustand, zwei direkte HTTP-Abrufe der Update-Metadaten und den aktuellen WordPress-Update-Transient.</p>
+
+				<form method="post" style="margin: 18px 0;">
+					<?php wp_nonce_field( '{{KSWUPD_PREFIX}}_force_update_check' ); ?>
+					<input type="hidden" name="ksw_force_update_check" value="1">
+					<?php submit_button( 'Update-Check jetzt erzwingen', 'primary', 'submit', false ); ?>
+				</form>
+
+				<h2>Runtime und Hooks</h2>
+				<table class="widefat striped" style="max-width: 1200px;">
+					<tbody>
+					<?php foreach ( $runtime_rows as $label => $value ) : ?>
+						<tr>
+							<th style="width: 260px;"><?php echo esc_html( $label ); ?></th>
+							<td><code><?php echo esc_html( $value ); ?></code></td>
+						</tr>
+					<?php endforeach; ?>
+					</tbody>
+				</table>
+
+				<h2>HTTP-Test: normal</h2>
+				<?php $this->render_diagnostic_http_table( $normal_http ); ?>
+
+				<h2>HTTP-Test: Cache-Bypass</h2>
+				<p>Zusätzliches Query-Argument sowie <code>Cache-Control: no-cache</code> und <code>Pragma: no-cache</code>.</p>
+				<?php $this->render_diagnostic_http_table( $bypass_http ); ?>
+
+				<h2>WordPress update_plugins Transient</h2>
+				<table class="widefat striped" style="max-width: 1200px;">
+					<tbody>
+						<tr>
+							<th style="width: 260px;">checked[plugin]</th>
+							<td><pre style="white-space: pre-wrap;"><?php echo esc_html( $this->diagnostic_dump( $checked ) ); ?></pre></td>
+						</tr>
+						<tr>
+							<th>response[plugin]</th>
+							<td><pre style="white-space: pre-wrap;"><?php echo esc_html( $this->diagnostic_dump( $response ) ); ?></pre></td>
+						</tr>
+						<tr>
+							<th>no_update[plugin]</th>
+							<td><pre style="white-space: pre-wrap;"><?php echo esc_html( $this->diagnostic_dump( $no_update ) ); ?></pre></td>
+						</tr>
+					</tbody>
+				</table>
+
+				<h2>Gesamter Transient</h2>
+				<details>
+					<summary>update_plugins vollständig anzeigen</summary>
+					<pre style="white-space: pre-wrap; max-width: 1200px;"><?php echo esc_html( $this->diagnostic_dump( $transient ) ); ?></pre>
+				</details>
+			</div>
+			<?php
+		}
+
+		private function render_diagnostic_http_table( array $result ): void {
+			$rows = [
+				'URL'          => (string) ( $result['url'] ?? '' ),
+				'HTTP-Status'  => (string) ( $result['http_code'] ?? '' ),
+				'WP_Error'     => (string) ( $result['wp_error'] ?? '' ),
+				'Body-Länge'   => (string) ( $result['body_length'] ?? '' ),
+				'JSON-Status'  => (string) ( $result['json_error'] ?? '' ),
+				'Version'      => (string) ( $result['version'] ?? '' ),
+				'Download-URL' => (string) ( $result['download'] ?? '' ),
+			];
+
+			$headers = isset( $result['headers'] ) && is_array( $result['headers'] ) ? $result['headers'] : [];
+			foreach ( $headers as $name => $value ) {
+				$rows[ 'Header: ' . $name ] = (string) $value;
+			}
+			?>
+			<table class="widefat striped" style="max-width: 1200px;">
+				<tbody>
+				<?php foreach ( $rows as $label => $value ) : ?>
+					<tr>
+						<th style="width: 260px;"><?php echo esc_html( $label ); ?></th>
+						<td><code><?php echo esc_html( $value ); ?></code></td>
+					</tr>
+				<?php endforeach; ?>
+				</tbody>
+			</table>
+			<?php
+		}
+
 	}
