@@ -4,6 +4,11 @@
 
 *(none)*
 
+## v 1.0.0
+released **2026-09-04**, including:
+ - Das ist der **MVP**
+
+
 ## v 0.1.5
 released **2026-09-04**, including:
  - Abschluss5

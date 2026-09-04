@@ -1,10 +1,10 @@
 <?php
 /**
  * Plugin Name: Hello World Plugin
- * Update URI: https://raw.githubusercontent.com/KornSW/WP-AutoUpdate-G2/master/doc/update.json
+ * Update URI: https://raw.githubusercontent.com/KornSW/WP-AutoUpdate-G2/master/doc/hello-world-plugin.update.json
  * Plugin URI: https://github.com/KornSW/WP-AutoUpdate-G2
  * Description: Minimales Demo-Plugin zum Testen der vollautomatischen GitHub-Update-Nachrüstung.
- * Version: 0.1.5
+ * Version: 1.0.0
  * Author: KornSW
  * Requires at least: 6.0
  * Requires PHP: 7.4

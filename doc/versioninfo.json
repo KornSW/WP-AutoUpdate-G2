@@ -1,13 +1,13 @@
 {
-  "currentVersionWithSuffix": "0.1.5",
+  "currentVersionWithSuffix": "1.0.0",
   "releaseType": "",
-  "currentVersion": "0.1.5",
-  "currentMajor": 0,
-  "currentMinor": 1,
-  "currentFix": 5,
-  "previousVersion": "0.1.4",
+  "currentVersion": "1.0.0",
+  "currentMajor": 1,
+  "currentMinor": 0,
+  "currentFix": 0,
+  "previousVersion": "0.1.5",
   "changeGrade": "fix",
-  "versionTimeInfo": "11:37:54",
+  "versionTimeInfo": "12:58:36",
   "versionDateInfo": "2026-09-04",
-  "versionNotes": "- Abschluss5\n"
+  "versionNotes": "- Das ist der **MVP**\n"
 }
