@@ -4,6 +4,11 @@
 
 *(none)*
 
+## v 0.1.1
+released **2026-09-04**, including:
+ - Fix2
+
+
 ## v 0.1.0
 released **2026-09-04**, including:
  - Fix1

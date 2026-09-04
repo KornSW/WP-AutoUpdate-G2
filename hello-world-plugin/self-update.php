@@ -65,6 +65,7 @@ if ( ! class_exists( 'TK_Self_Update', false ) ) {
 			add_filter( 'update_plugins_' . $host, [ $this, 'filter_update_response' ], 10, 4 );
 			add_filter( 'plugins_api', [ $this, 'filter_plugin_information' ], 20, 3 );
 			add_filter( 'pre_set_site_transient_update_plugins', [ $this, 'inject_update_transient' ] );
+			add_filter( 'site_transient_update_plugins', [ $this, 'inject_update_transient' ] );
 			add_filter( 'plugin_row_meta', [ $this, 'filter_plugin_row_meta' ], 10, 2 );
 		}
 
