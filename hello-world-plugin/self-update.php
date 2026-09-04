@@ -2,42 +2,33 @@
 /**
  * KornSW Self Update Loader
  *
- * Diese Datei darf in mehreren Plugins gleichzeitig vorhanden sein.
- * Klasse/Funktion werden nur einmal definiert, aber jedes Plugin bekommt
- * über tk_self_update_bootstrap(__FILE__) eine eigene Updater-Instanz.
+ * Dieses Template wird beim Release pro Plugin mit einem persistenten,
+ * kollisionsfreien Funktions-/Klassenpräfix personalisiert.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-if ( ! function_exists( 'tk_self_update_bootstrap' ) ) {
-	function tk_self_update_bootstrap( $plugin_file ) {
-		if ( ! class_exists( 'TK_Self_Update', false ) ) {
-			return null;
-		}
+function kswhelloworld495f_bootstrap( $plugin_file ) {
+	static $instances = [];
 
-		static $instances = [];
+	$plugin_file = wp_normalize_path( $plugin_file );
+	$plugin_key  = plugin_basename( $plugin_file );
 
-		$plugin_file = wp_normalize_path( $plugin_file );
-		$plugin_key  = plugin_basename( $plugin_file );
-
-		if ( isset( $instances[ $plugin_key ] ) ) {
-			return $instances[ $plugin_key ];
-		}
-
-		$instance = new TK_Self_Update( $plugin_file );
-		$instance->register_hooks();
-
-		$instances[ $plugin_key ] = $instance;
-
-		return $instance;
+	if ( isset( $instances[ $plugin_key ] ) ) {
+		return $instances[ $plugin_key ];
 	}
+
+	$instance = new KSWHELLOWORLD495FSelfUpdate( $plugin_file );
+	$instance->register_hooks();
+
+	$instances[ $plugin_key ] = $instance;
+
+	return $instance;
 }
 
-if ( ! class_exists( 'TK_Self_Update', false ) ) {
-
-	class TK_Self_Update {
+class KSWHELLOWORLD495FSelfUpdate {
 
 		private string $plugin_file;
 		private string $plugin_basename;
@@ -64,6 +55,7 @@ if ( ! class_exists( 'TK_Self_Update', false ) ) {
 
 			add_filter( 'update_plugins_' . $host, [ $this, 'filter_update_response' ], 10, 4 );
 			add_filter( 'plugins_api', [ $this, 'filter_plugin_information' ], 20, 3 );
+			add_filter( 'pre_set_site_transient_update_plugins', [ $this, 'inject_update_transient' ] );
 			add_filter( 'plugin_row_meta', [ $this, 'filter_plugin_row_meta' ], 10, 2 );
 		}
 
@@ -166,8 +158,7 @@ if ( ! class_exists( 'TK_Self_Update', false ) ) {
 				return false;
 			}
 
-			$current_version = ! empty( $headers['Version'] ) ? (string) $headers['Version'] : '0.0.0';
-			$new_version     = (string) $remote['version'];
+			$new_version = (string) $remote['version'];
 
 			return [
 				'id'           => (string) ( $headers['UpdateURI'] ?? '' ),
@@ -301,4 +292,3 @@ if ( ! class_exists( 'TK_Self_Update', false ) ) {
 			return $links;
 		}
 	}
-}
