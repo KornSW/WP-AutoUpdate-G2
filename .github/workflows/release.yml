@@ -77,7 +77,7 @@ jobs:
 
           grep -F "Version: ${{ steps.build.outputs.version }}" "${{ steps.build.outputs.entry }}"
           grep -F "Update URI: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/master/doc/update.json" "${{ steps.build.outputs.entry }}"
-          grep -F "tk_self_update_bootstrap( __FILE__ );" "${{ steps.build.outputs.entry }}"
+          grep -E "ksw[a-z0-9]+_bootstrap\( __FILE__ \);" "${{ steps.build.outputs.entry }}"
 
           unzip -l "${{ steps.build.outputs.asset }}"
 

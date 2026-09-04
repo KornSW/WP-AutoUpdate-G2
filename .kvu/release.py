@@ -6,6 +6,7 @@ import html
 import json
 from pathlib import Path
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -17,13 +18,12 @@ CHANGELOG = DOC / "changelog.md"
 VERSIONINFO = DOC / "versioninfo.json"
 UPDATE_JSON = DOC / "update.json"
 ENTRY_MARKER = DOC / "plugin-entry.txt"
+UPDATER_PREFIX = DOC / "updater-prefix.txt"
 SELF_UPDATE_TEMPLATE = ROOT / ".kvu/templates/self-update.php"
 DIST = ROOT / "dist"
 
-SELF_UPDATE_BLOCK = """/*************** SELF-UPDATE ***************/
-require_once __DIR__ . '/self-update.php';
-tk_self_update_bootstrap( __FILE__ );
-/*******************************************/"""
+SELF_UPDATE_START = "/*************** SELF-UPDATE ***************/"
+SELF_UPDATE_END = "/*******************************************/"
 
 RELEASE_HEADER_RE = re.compile(r"^\s*##\s+v\s+(\d+)\.(\d+)\.(\d+)\s*$", re.I)
 UPCOMING_RE = re.compile(r"^\s*##\s+Upcoming Changes(?:\s+\(([^)]+)\))?\s*$", re.I)
@@ -110,9 +110,54 @@ def set_header(content: str, name: str, value: str) -> str:
     insertion = f" * {name}: {value}\n"
     return content[:line_end+1] + insertion + content[line_end+1:]
 
-def ensure_update_block(content: str) -> str:
-    if "tk_self_update_bootstrap( __FILE__ );" in content:
-        return content
+def short_plugin_token(plugin_name: str, slug: str) -> str:
+    source = plugin_name.strip() or slug.strip()
+    tokens = re.findall(r"[A-Za-z0-9]+", source.lower())
+    tokens = [t for t in tokens if t not in {"wordpress", "plugin"}]
+    compact = "".join(tokens)
+    if not compact:
+        compact = re.sub(r"[^a-z0-9]", "", slug.lower())
+    if not compact:
+        compact = "upd"
+    return compact[:12]
+
+def get_or_create_updater_prefix(plugin_name: str, slug: str) -> tuple[str, str]:
+    DOC.mkdir(parents=True, exist_ok=True)
+    if UPDATER_PREFIX.exists():
+        prefix = UPDATER_PREFIX.read_text(encoding="utf-8").strip()
+        if not re.fullmatch(r"[a-z][a-z0-9]{5,31}", prefix):
+            fail("doc/updater-prefix.txt contains an invalid updater prefix.")
+    else:
+        prefix = f"ksw{short_plugin_token(plugin_name, slug)}{secrets.token_hex(2)}"
+        UPDATER_PREFIX.write_text(prefix + "\n", encoding="utf-8")
+
+    class_prefix = prefix.upper()
+    return prefix, class_prefix
+
+def render_self_update(prefix: str, class_prefix: str) -> str:
+    template = SELF_UPDATE_TEMPLATE.read_text(encoding="utf-8")
+    rendered = template.replace("{{KSWUPD_PREFIX}}", prefix)
+    rendered = rendered.replace("{{KSWUPD_CLASS_PREFIX}}", class_prefix)
+    if "{{KSWUPD_" in rendered:
+        fail("Unresolved self-update template placeholder remains after rendering.")
+    return rendered
+
+def self_update_block(prefix: str) -> str:
+    return (
+        SELF_UPDATE_START + "\n"
+        + "require_once __DIR__ . '/self-update.php';\n"
+        + f"{prefix}_bootstrap( __FILE__ );\n"
+        + SELF_UPDATE_END
+    )
+
+def ensure_update_block(content: str, prefix: str) -> str:
+    block = self_update_block(prefix)
+    managed = re.compile(
+        re.escape(SELF_UPDATE_START) + r".*?" + re.escape(SELF_UPDATE_END),
+        re.S,
+    )
+    if managed.search(content):
+        return managed.sub(block, content, count=1)
 
     # Prefer inserting directly after the common ABSPATH guard.
     guard = re.search(
@@ -122,7 +167,7 @@ def ensure_update_block(content: str) -> str:
     )
     if guard:
         pos = guard.end()
-        return content[:pos] + "\n" + SELF_UPDATE_BLOCK + "\n\n" + content[pos:]
+        return content[:pos] + "\n" + block + "\n\n" + content[pos:]
 
     # Fallback: after the plugin header docblock.
     plugin_name_match = PLUGIN_NAME_RE.search(content)
@@ -131,7 +176,7 @@ def ensure_update_block(content: str) -> str:
         end = content.find("*/", plugin_name_match.end())
         if start != -1 and end != -1:
             pos = end + 2
-            return content[:pos] + "\n\n" + SELF_UPDATE_BLOCK + content[pos:]
+            return content[:pos] + "\n\n" + block + content[pos:]
 
     fail("Unable to find a safe insertion point for the SELF-UPDATE block.")
 
@@ -334,13 +379,17 @@ def main() -> None:
     homepage = f"https://github.com/{repository}"
     update_uri = f"https://raw.githubusercontent.com/{repository}/master/doc/update.json"
 
-    # Synchronize the common runtime updater into the actual plugin.
-    shutil.copyfile(SELF_UPDATE_TEMPLATE, plugin_dir / "self-update.php")
+    # Create/load the persistent per-plugin updater prefix and personalize the runtime template.
+    updater_prefix, updater_class_prefix = get_or_create_updater_prefix(plugin_name, slug)
+    (plugin_dir / "self-update.php").write_text(
+        render_self_update(updater_prefix, updater_class_prefix),
+        encoding="utf-8",
+    )
 
-    # Add/update repository metadata and exact existing bootstrap block.
+    # Add/update repository metadata and materialize the managed bootstrap block.
     content = set_header(content, "Plugin URI", homepage)
     content = set_header(content, "Update URI", update_uri)
-    content = ensure_update_block(content)
+    content = ensure_update_block(content, updater_prefix)
 
     lines, upcoming_idx, first_release_idx, previous, changes = read_changelog()
     if not changes:
