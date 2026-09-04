@@ -4,10 +4,10 @@ from __future__ import annotations
 import datetime as dt
 import html
 import json
+import os
 from pathlib import Path
 import re
 import secrets
-import shutil
 import subprocess
 import sys
 import zipfile
@@ -16,9 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DOC = ROOT / "doc"
 CHANGELOG = DOC / "changelog.md"
 VERSIONINFO = DOC / "versioninfo.json"
-UPDATE_JSON = DOC / "update.json"
-ENTRY_MARKER = DOC / "plugin-entry.txt"
-UPDATER_PREFIX = DOC / "updater-prefix.txt"
+LEGACY_ENTRY_MARKER = DOC / "plugin-entry.txt"
+LEGACY_UPDATER_PREFIX = DOC / "updater-prefix.txt"
 SELF_UPDATE_TEMPLATE = ROOT / ".kvu/templates/self-update.php"
 DIST = ROOT / "dist"
 
@@ -38,13 +37,26 @@ HEADER_LINE_RE = {
     "Requires PHP": re.compile(r"(?mi)^\s*\*\s*Requires PHP:\s*(.*?)\s*$"),
 }
 SKIP_MARKERS_RE = re.compile(r"\[(?:skip ci|ci skip|no ci|skip actions|actions skip)\]", re.I)
+BOOTSTRAP_PREFIX_RE = re.compile(r"\b(ksw[a-z0-9]{3,31})_bootstrap\s*\(\s*__FILE__\s*\)\s*;")
+
+INFRASTRUCTURE_DIRECTORIES = {
+    ".git",
+    ".github",
+    ".kvu",
+    "doc",
+    "dist",
+    "__pycache__",
+}
+
 
 def fail(message: str) -> None:
     print(f"ERROR: {message}", file=sys.stderr)
     raise SystemExit(1)
 
+
 def git(*args: str) -> str:
     return subprocess.check_output(["git", *args], cwd=ROOT, text=True).strip()
+
 
 def is_plugin_entry(path: Path) -> bool:
     if not path.is_file() or path.suffix.lower() != ".php":
@@ -55,36 +67,56 @@ def is_plugin_entry(path: Path) -> bool:
         return False
     return PLUGIN_NAME_RE.search(head) is not None
 
-def detect_entry() -> Path:
-    if ENTRY_MARKER.exists():
-        rel = ENTRY_MARKER.read_text(encoding="utf-8").strip()
-        candidate = (ROOT / rel).resolve()
-        try:
-            candidate.relative_to(ROOT.resolve())
-        except ValueError:
-            fail("doc/plugin-entry.txt points outside the repository.")
-        if not is_plugin_entry(candidate):
-            fail(f"Configured plugin entry is invalid: {rel}")
-        return candidate
 
-    candidates: list[Path] = []
-    for path in ROOT.glob("*.php"):
-        if is_plugin_entry(path):
-            candidates.append(path)
-    for directory in ROOT.iterdir():
-        if not directory.is_dir() or directory.name.startswith("."):
+def detect_entries() -> list[Path]:
+    root_entries = sorted(path for path in ROOT.glob("*.php") if is_plugin_entry(path))
+
+    directory_entries: list[Path] = []
+    for directory in sorted(ROOT.iterdir()):
+        if not directory.is_dir():
             continue
-        for path in directory.glob("*.php"):
-            if is_plugin_entry(path):
-                candidates.append(path)
+        if directory.name.startswith(".") or directory.name in INFRASTRUCTURE_DIRECTORIES:
+            continue
 
-    candidates = sorted(set(candidates))
-    if len(candidates) == 0:
-        fail("No WordPress plugin entry file found in repository root or exactly one directory level below it.")
-    if len(candidates) > 1:
-        listing = "\n".join(f" - {p.relative_to(ROOT)}" for p in candidates)
-        fail("Multiple WordPress plugin entry files found. Create doc/plugin-entry.txt with one relative path:\n" + listing)
-    return candidates[0]
+        entries = sorted(path for path in directory.glob("*.php") if is_plugin_entry(path))
+        if len(entries) > 1:
+            listing = "\n".join(f" - {path.relative_to(ROOT)}" for path in entries)
+            fail(
+                f"Multiple WordPress plugin entry files found in top-level directory '{directory.name}'. "
+                "Each plugin directory must contain exactly one Plugin Name header:\n" + listing
+            )
+        if entries:
+            directory_entries.extend(entries)
+
+    candidates = root_entries + directory_entries
+    if not candidates:
+        fail("No WordPress plugin entry file found in repository root or one top-level plugin directory.")
+
+    if len(root_entries) > 1:
+        listing = "\n".join(f" - {path.relative_to(ROOT)}" for path in root_entries)
+        fail("Multiple root-level WordPress plugin entry files are not supported:\n" + listing)
+
+    if root_entries and len(candidates) > 1:
+        fail(
+            "A root-level plugin cannot be released together with plugin directories. "
+            "For multi-plugin repositories, place every plugin in its own top-level directory."
+        )
+
+    return candidates
+
+
+def update_metadata_path(slug: str) -> Path:
+    return DOC / f"{slug}.update.json"
+
+
+def updater_prefix_path(slug: str) -> Path:
+    return DOC / f"{slug}.updater-prefix.txt"
+
+
+def existing_updater_prefix(content: str) -> str:
+    match = BOOTSTRAP_PREFIX_RE.search(content)
+    return match.group(1) if match else ""
+
 
 def header_value(content: str, name: str) -> str:
     if name == "Plugin Name":
@@ -121,18 +153,37 @@ def short_plugin_token(plugin_name: str, slug: str) -> str:
         compact = "upd"
     return compact[:12]
 
-def get_or_create_updater_prefix(plugin_name: str, slug: str) -> tuple[str, str]:
+def get_or_create_updater_prefix(
+    plugin_name: str,
+    slug: str,
+    entry_content: str,
+    plugin_count: int,
+) -> tuple[str, str]:
     DOC.mkdir(parents=True, exist_ok=True)
-    if UPDATER_PREFIX.exists():
-        prefix = UPDATER_PREFIX.read_text(encoding="utf-8").strip()
-        if not re.fullmatch(r"[a-z][a-z0-9]{5,31}", prefix):
-            fail("doc/updater-prefix.txt contains an invalid updater prefix.")
-    else:
-        prefix = f"ksw{short_plugin_token(plugin_name, slug)}{secrets.token_hex(2)}"
-        UPDATER_PREFIX.write_text(prefix + "\n", encoding="utf-8")
+    prefix_file = updater_prefix_path(slug)
 
-    class_prefix = prefix.upper()
-    return prefix, class_prefix
+    if prefix_file.exists():
+        prefix = prefix_file.read_text(encoding="utf-8").strip()
+    else:
+        # Preserve a prefix already materialized into this plugin. This makes the
+        # migration from the former single-plugin layout stable and idempotent.
+        prefix = existing_updater_prefix(entry_content)
+
+        # Backward compatibility for a repository that has not yet been
+        # materialized with the new per-plugin prefix filename.
+        if not prefix and plugin_count == 1 and LEGACY_UPDATER_PREFIX.exists():
+            prefix = LEGACY_UPDATER_PREFIX.read_text(encoding="utf-8").strip()
+
+        if not prefix:
+            prefix = f"ksw{short_plugin_token(plugin_name, slug)}{secrets.token_hex(2)}"
+
+        prefix_file.write_text(prefix + "\n", encoding="utf-8")
+
+    if not re.fullmatch(r"[a-z][a-z0-9]{5,31}", prefix):
+        fail(f"{prefix_file.relative_to(ROOT)} contains an invalid updater prefix.")
+
+    return prefix, prefix.upper()
+
 
 def render_self_update(prefix: str, class_prefix: str) -> str:
     template = SELF_UPDATE_TEMPLATE.read_text(encoding="utf-8")
@@ -362,37 +413,16 @@ def build_zip(plugin_dir: Path, slug: str) -> Path:
     return zip_path
 
 def main() -> None:
-    repository = (Path.cwd() and __import__("os").environ.get("GITHUB_REPOSITORY", "")).strip()
-    branch = __import__("os").environ.get("GITHUB_REF_NAME", "master").strip() or "master"
+    repository = os.environ.get("GITHUB_REPOSITORY", "").strip()
     if not repository or "/" not in repository:
         fail("GITHUB_REPOSITORY must contain owner/repository.")
 
-    entry = detect_entry()
-    plugin_dir = entry.parent
-    content = entry.read_text(encoding="utf-8")
-
-    plugin_name = header_value(content, "Plugin Name")
-    description = header_value(content, "Description")
-    author = header_value(content, "Author")
-    requires_wp = header_value(content, "Requires at least")
-    requires_php = header_value(content, "Requires PHP")
-
-    slug = plugin_dir.name if plugin_dir != ROOT else entry.stem
+    entries = detect_entries()
+    plugin_count = len(entries)
     homepage = f"https://github.com/{repository}"
-    update_uri = f"https://raw.githubusercontent.com/{repository}/master/doc/update.json"
 
-    # Create/load the persistent per-plugin updater prefix and personalize the runtime template.
-    updater_prefix, updater_class_prefix = get_or_create_updater_prefix(plugin_name, slug)
-    (plugin_dir / "self-update.php").write_text(
-        render_self_update(updater_prefix, updater_class_prefix),
-        encoding="utf-8",
-    )
-
-    # Add/update repository metadata and materialize the managed bootstrap block.
-    content = set_header(content, "Plugin URI", homepage)
-    content = set_header(content, "Update URI", update_uri)
-    content = ensure_update_block(content, updater_prefix)
-
+    # The repository is one versioning unit. Calculate and materialize its
+    # version exactly once, independent of the number of plugin artifacts.
     lines, upcoming_idx, first_release_idx, previous, changes = read_changelog()
     if not changes:
         changes = git_fallback_changes()
@@ -401,9 +431,6 @@ def main() -> None:
 
     next_version_tuple, change_grade, ordered_changes = classify(changes, previous)
     next_version = version_string(next_version_tuple)
-
-    content = set_header(content, "Version", next_version)
-    entry.write_text(content, encoding="utf-8")
 
     now = dt.datetime.now().astimezone()
     date_info = now.strftime("%Y-%m-%d")
@@ -418,7 +445,7 @@ def main() -> None:
         ordered_changes,
     )
 
-    notes = "".join(f"- {c}\n" for c in ordered_changes)
+    notes = "".join(f"- {change}\n" for change in ordered_changes)
     version_info = {
         "currentVersionWithSuffix": next_version,
         "releaseType": "",
@@ -432,48 +459,117 @@ def main() -> None:
         "versionDateInfo": date_info,
         "versionNotes": notes,
     }
-    VERSIONINFO.write_text(json.dumps(version_info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    DOC.mkdir(parents=True, exist_ok=True)
+    VERSIONINFO.write_text(
+        json.dumps(version_info, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     tag = f"v{next_version}"
-    asset_name = f"{slug}.zip"
-    download_url = f"https://github.com/{repository}/releases/download/{tag}/{asset_name}"
-
     changelog_html = (
         f"<h4>Version {html.escape(next_version)}</h4><ul>"
-        + "".join(f"<li>{html.escape(c)}</li>" for c in ordered_changes)
+        + "".join(f"<li>{html.escape(change)}</li>" for change in ordered_changes)
         + "</ul>"
     )
 
-    update_data = {
-        "name": plugin_name,
-        "version": next_version,
-        "author": author,
-        "homepage": homepage,
-        "download_url": download_url,
-        "requires": requires_wp,
-        "requires_php": requires_php,
-        "tested": "",
-        "sections": {
-            "description": description,
-            "changelog": changelog_html,
-        },
-    }
-    UPDATE_JSON.write_text(json.dumps(update_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    plugin_results: list[dict[str, str]] = []
+    asset_paths: list[str] = []
 
-    zip_path = build_zip(plugin_dir, slug)
+    for entry in entries:
+        plugin_dir = entry.parent
+        content = entry.read_text(encoding="utf-8")
+
+        plugin_name = header_value(content, "Plugin Name")
+        description = header_value(content, "Description")
+        author = header_value(content, "Author")
+        requires_wp = header_value(content, "Requires at least")
+        requires_php = header_value(content, "Requires PHP")
+
+        slug = plugin_dir.name if plugin_dir != ROOT else entry.stem
+        metadata_path = update_metadata_path(slug)
+        update_uri = (
+            f"https://raw.githubusercontent.com/{repository}/master/"
+            f"{metadata_path.relative_to(ROOT).as_posix()}"
+        )
+
+        updater_prefix, updater_class_prefix = get_or_create_updater_prefix(
+            plugin_name,
+            slug,
+            content,
+            plugin_count,
+        )
+
+        (plugin_dir / "self-update.php").write_text(
+            render_self_update(updater_prefix, updater_class_prefix),
+            encoding="utf-8",
+        )
+
+        content = set_header(content, "Plugin URI", homepage)
+        content = set_header(content, "Update URI", update_uri)
+        content = set_header(content, "Version", next_version)
+        content = ensure_update_block(content, updater_prefix)
+        entry.write_text(content, encoding="utf-8")
+
+        asset_name = f"{slug}.zip"
+        download_url = f"https://github.com/{repository}/releases/download/{tag}/{asset_name}"
+
+        update_data = {
+            "name": plugin_name,
+            "version": next_version,
+            "author": author,
+            "homepage": homepage,
+            "download_url": download_url,
+            "requires": requires_wp,
+            "requires_php": requires_php,
+            "tested": "",
+            "sections": {
+                "description": description,
+                "changelog": changelog_html,
+            },
+        }
+        metadata_path.write_text(
+            json.dumps(update_data, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        zip_path = build_zip(plugin_dir, slug)
+        asset_relative = zip_path.relative_to(ROOT).as_posix()
+        asset_paths.append(asset_relative)
+
+        plugin_results.append(
+            {
+                "entry": entry.relative_to(ROOT).as_posix(),
+                "slug": slug,
+                "update_metadata": metadata_path.relative_to(ROOT).as_posix(),
+                "updater_prefix": updater_prefix_path(slug).relative_to(ROOT).as_posix(),
+                "asset": asset_relative,
+            }
+        )
+
+    # The former single-plugin files are obsolete after successful migration.
+    # Only remove them after all new per-plugin files have been materialized.
+    legacy_update_json = DOC / "update.json"
+    if legacy_update_json.exists():
+        legacy_update_json.unlink()
+    if LEGACY_UPDATER_PREFIX.exists():
+        LEGACY_UPDATER_PREFIX.unlink()
+
     release_notes = DIST / "release-notes.md"
     release_notes.write_text(f"# {next_version}\n\n{notes}", encoding="utf-8")
 
     result = {
-        "entry": entry.relative_to(ROOT).as_posix(),
-        "slug": slug,
         "version": next_version,
         "tag": tag,
-        "asset": zip_path.relative_to(ROOT).as_posix(),
+        "assets": asset_paths,
         "notes": release_notes.relative_to(ROOT).as_posix(),
+        "plugins": plugin_results,
     }
-    (DIST / "release-result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps(result))
+    (DIST / "release-result.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(json.dumps(result, ensure_ascii=False))
+
 
 if __name__ == "__main__":
     main()
