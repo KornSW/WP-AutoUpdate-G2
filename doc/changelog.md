@@ -4,6 +4,12 @@
 
 *(none)*
 
+## v 0.1.2
+released **2026-09-04**, including:
+ - Merge branch 'master' of https://github.com/KornSW/WP-AutoUpdate-G2
+ - Fix2b
+
+
 ## v 0.1.1
 released **2026-09-04**, including:
  - Fix2
