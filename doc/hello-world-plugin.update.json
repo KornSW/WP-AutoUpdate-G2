@@ -1,14 +1,14 @@
 {
   "name": "Hello World Plugin",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "author": "KornSW",
   "homepage": "https://github.com/KornSW/WP-AutoUpdate-G2",
-  "download_url": "https://github.com/KornSW/WP-AutoUpdate-G2/releases/download/v1.0.1/hello-world-plugin.zip",
+  "download_url": "https://github.com/KornSW/WP-AutoUpdate-G2/releases/download/v1.0.2/hello-world-plugin.zip",
   "requires": "6.0",
   "requires_php": "7.4",
   "tested": "",
   "sections": {
     "description": "Minimales Demo-Plugin zum Testen der vollautomatischen GitHub-Update-Nachrüstung.",
-    "changelog": "<h4>Version 1.0.1</h4><ul><li>Fix SelfUpdate-Process</li></ul>"
+    "changelog": "<h4>Version 1.0.2</h4><ul><li>Fix SelfUpdate</li></ul>"
   }
 }

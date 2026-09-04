@@ -4,7 +4,7 @@
  * Update URI: https://raw.githubusercontent.com/KornSW/WP-AutoUpdate-G2/master/doc/hello-world-plugin.update.json
  * Plugin URI: https://github.com/KornSW/WP-AutoUpdate-G2
  * Description: Minimales Demo-Plugin zum Testen der vollautomatischen GitHub-Update-Nachrüstung.
- * Version: 1.0.1
+ * Version: 1.0.2
  * Author: KornSW
  * Requires at least: 6.0
  * Requires PHP: 7.4
