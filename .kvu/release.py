@@ -143,8 +143,10 @@ def render_self_update(prefix: str, class_prefix: str) -> str:
     return rendered
 
 def self_update_block(prefix: str) -> str:
+    diagnostics_constant = f"{prefix.upper()}_SELF_UPDATE_DIAGNOSTICS"
     return (
         SELF_UPDATE_START + "\n"
+        + f"define( '{diagnostics_constant}', false );\n"
         + "require_once __DIR__ . '/self-update.php';\n"
         + f"{prefix}_bootstrap( __FILE__ );\n"
         + SELF_UPDATE_END

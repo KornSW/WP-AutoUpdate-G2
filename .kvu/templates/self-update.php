@@ -58,7 +58,11 @@ class {{KSWUPD_CLASS_PREFIX}}SelfUpdate {
 			add_filter( 'pre_set_site_transient_update_plugins', [ $this, 'inject_update_transient' ] );
 			add_filter( 'plugin_row_meta', [ $this, 'filter_plugin_row_meta' ], 10, 2 );
 
-			if ( is_admin() ) {
+			if (
+				is_admin()
+				&& defined( '{{KSWUPD_CLASS_PREFIX}}_SELF_UPDATE_DIAGNOSTICS' )
+				&& {{KSWUPD_CLASS_PREFIX}}_SELF_UPDATE_DIAGNOSTICS
+			) {
 				add_action( 'admin_menu', [ $this, 'register_diagnostics_page' ] );
 			}
 		}
