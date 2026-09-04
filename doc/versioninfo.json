@@ -1,13 +1,13 @@
 {
-  "currentVersionWithSuffix": "0.1.4",
+  "currentVersionWithSuffix": "0.1.5",
   "releaseType": "",
-  "currentVersion": "0.1.4",
+  "currentVersion": "0.1.5",
   "currentMajor": 0,
   "currentMinor": 1,
-  "currentFix": 4,
-  "previousVersion": "0.1.3",
+  "currentFix": 5,
+  "previousVersion": "0.1.4",
   "changeGrade": "fix",
-  "versionTimeInfo": "11:22:02",
+  "versionTimeInfo": "11:37:54",
   "versionDateInfo": "2026-09-04",
-  "versionNotes": "- Merge branch 'master' of https://github.com/KornSW/WP-AutoUpdate-G2\n- Fix4\n"
+  "versionNotes": "- Abschluss5\n"
 }
